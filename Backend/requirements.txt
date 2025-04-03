@@ -1,0 +1,4 @@
+pymongo
+sqlparse
+flask
+flask-cors

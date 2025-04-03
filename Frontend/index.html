@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL a MongoDB Traductor</title>
+    <link rel="stylesheet" href="src/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo">
+                <i class="fa-solid fa-database"></i>
+            </div>
+            <nav class="nav-menu">
+                <a href="#" class="active"><i class="fa-solid fa-home"></i> Inicio</a>
+                <a href="#"><i class="fa-solid fa-calendar"></i> Historial</a>
+                <a href="#"><i class="fa-solid fa-users"></i> Colecciones</a>
+                <a href="#"><i class="fa-solid fa-gear"></i> Configuración</a>
+            </nav>
+            <div class="logout">
+                <a href="#"><i class="fa-solid fa-sign-out-alt"></i> Salir</a>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <header>
+                <div class="search-bar">
+                    <input type="text" placeholder="Buscar consulta o colección...">
+                    <i class="fa-solid fa-search"></i>
+                </div>
+                <div class="user-profile">
+                    <span class="user-name">Usuario</span>
+                    <div class="user-avatar">
+                        <i class="fa-solid fa-user"></i>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard -->
+            <div class="dashboard">
+                <div class="stats-container">
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fa-solid fa-database"></i>
+                        </div>
+                        <div class="stat-content">
+                            <h3>Bases de datos disponibles</h3>
+                            <p id="db-count">0</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fa-solid fa-table"></i>
+                        </div>
+                        <div class="stat-content">
+                            <h3>Colecciones</h3>
+                            <p id="collections-count">0</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">
+                            <i class="fa-solid fa-code"></i>
+                        </div>
+                        <div class="stat-content">
+                            <h3>Consultas realizadas</h3>
+                            <p id="queries-count">0</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Translator Form -->
+                <div class="translator-container">
+                    <h2>Traductor SQL a MongoDB</h2>
+                    <div class="form-container">
+                        <div class="form-group">
+                            <label for="database-select">Base de Datos:</label>
+                            <select id="database-select" class="form-control">
+                                <option value="">Seleccionar base de datos...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="collection-select">Colección:</label>
+                            <select id="collection-select" class="form-control">
+                                <option value="">Seleccionar colección...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="sql-query">Consulta SQL:</label>
+                            <textarea id="sql-query" class="form-control" rows="4" placeholder="Ingrese su consulta SQL aquí..."></textarea>
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button id="execute-btn" class="btn btn-primary">
+                                <i class="fa-solid fa-play"></i> Ejecutar
+                            </button>
+                            <button id="clear-btn" class="btn btn-secondary">
+                                <i class="fa-solid fa-broom"></i> Limpiar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="results-container">
+                    <div class="result-tabs">
+                        <button class="tab-btn active" data-tab="mongodb-query">Consulta MongoDB</button>
+                        <button class="tab-btn" data-tab="query-results">Resultados</button>
+                        <button class="tab-btn" data-tab="raw-query">Query</button>
+                    </div>
+                    
+                    <div class="tab-content">
+                        <div id="mongodb-query" class="tab-pane active">
+                            <div class="code-container">
+                                <pre id="mongo-query-display">// La consulta MongoDB aparecerá aquí</pre>
+                            </div>
+                        </div>
+                        
+                        <div id="query-results" class="tab-pane">
+                            <div class="results-info">
+                                <p id="results-count">0 resultados encontrados</p>
+                                <div class="export-options">
+                                    <button id="export-json" class="btn btn-sm">JSON</button>
+                                    <button id="export-csv" class="btn btn-sm">CSV</button>
+                                </div>
+                            </div>
+                            <div class="table-container">
+                                <table id="results-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>_id</th>
+                                            <!-- Columnas dinámicas generadas por JS -->
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Filas generadas dinámicamente por JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <!-- Nueva pestaña para mostrar Query -->
+                        <div id="raw-query" class="tab-pane">
+                            <div class="code-container">
+                                <pre id="raw-query-display">// El query ejecutable aparecerá aquí</pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast para notificaciones -->
+    <div id="toast" class="toast">
+        <div class="toast-content">
+            <i id="toast-icon" class="fa-solid fa-circle-info"></i>
+            <div class="toast-message-container">
+                <span id="toast-message">Notificación</span>
+            </div>
+        </div>
+        <div class="toast-progress"></div>
+    </div>
+
+    <!-- Loading spinner -->
+    <div id="loader" class="loader-container">
+        <div class="spinner"></div>
+    </div>
+
+    <script src="src/app.js"></script>
+
+</body>
+</html>
