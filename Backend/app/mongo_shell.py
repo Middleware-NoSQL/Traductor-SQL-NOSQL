@@ -9,120 +9,264 @@ class MongoShellQueryGenerator:
         """
         Genera una consulta ejecutable para la shell de MongoDB.
         
-        :param collection_name: Nombre de la colección (str)
-        :param mongo_query: Consulta en formato MongoDB (dict)
-        :return: String con la consulta ejecutable
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: String con la consulta ejecutable
         """
         operation = mongo_query.get("operation")
         
         if not operation:
             return "// No se pudo generar la consulta para la shell de MongoDB"
         
-        if operation == "find":
-            return MongoShellQueryGenerator._generate_find(collection_name, mongo_query)
-        elif operation == "aggregate":
-            return MongoShellQueryGenerator._generate_aggregate(collection_name, mongo_query)
-        elif operation == "insert":
-            return MongoShellQueryGenerator._generate_insert(collection_name, mongo_query)
-        elif operation == "update":
-            return MongoShellQueryGenerator._generate_update(collection_name, mongo_query)
-        elif operation == "delete":
-            return MongoShellQueryGenerator._generate_delete(collection_name, mongo_query)
+        # Seleccionar el método adecuado según la operación
+        generators = {
+            "find": MongoShellQueryGenerator._generate_find,
+            "aggregate": MongoShellQueryGenerator._generate_aggregate,
+            "insert": MongoShellQueryGenerator._generate_insert,
+            "update": MongoShellQueryGenerator._generate_update,
+            "delete": MongoShellQueryGenerator._generate_delete,
+            "create_collection": MongoShellQueryGenerator._generate_create_collection,
+            "drop_collection": MongoShellQueryGenerator._generate_drop_collection
+        }
+        
+        if operation in generators:
+            return generators[operation](collection_name, mongo_query)
         else:
             return f"// Operación '{operation}' no soportada para la shell de MongoDB"
     
     @staticmethod
     def _generate_find(collection_name, mongo_query):
-        """Genera una consulta find() para la shell de MongoDB."""
+        """
+        Genera una consulta find() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
+        # Extraer componentes de la consulta
         query_filter = mongo_query.get("query", {})
         projection = mongo_query.get("projection", None)
         sort = mongo_query.get("sort", None)
         limit = mongo_query.get("limit", None)
+        skip = mongo_query.get("skip", None)
         
-        # Construir consulta base
-        query_parts = [
-            f"db.{collection_name}.find(",
-            f"  {MongoShellQueryGenerator._format_json(query_filter)}"
-        ]
+        # Construir la consulta básica
+        query_parts = []
         
-        # Añadir proyección si existe
+        # Parte principal del find()
         if projection:
-            query_parts.append(f", {MongoShellQueryGenerator._format_json(projection)}")
+            query_parts.append(
+                f"db.{collection_name}.find(\n" +
+                f"  {MongoShellQueryGenerator._format_json(query_filter)},\n" +
+                f"  {MongoShellQueryGenerator._format_json(projection)}\n" +
+                f")"
+            )
+        else:
+            query_parts.append(
+                f"db.{collection_name}.find(\n" +
+                f"  {MongoShellQueryGenerator._format_json(query_filter)}\n" +
+                f")"
+            )
         
-        query_parts.append(")")
-        
-        # Añadir ordenamiento si existe
+        # Añadir los métodos de cursor en orden adecuado
         if sort:
-            sort_str = MongoShellQueryGenerator._format_json(sort)
-            query_parts.append(f".sort({sort_str})")
+            query_parts[0] += ".sort(" + MongoShellQueryGenerator._format_json(sort) + ")"
         
-        # Añadir límite si existe
+        if skip:
+            query_parts[0] += f".skip({skip})"
+        
         if limit is not None:
-            query_parts.append(f".limit({limit})")
+            query_parts[0] += f".limit({limit})"
         
         # Añadir pretty() para mejor visualización
-        query_parts.append(".pretty()")
+        query_parts[0] += ".pretty()"
         
-        return "".join(query_parts)
+        # Añadir comentario explicativo
+        query = "// Consulta equivalente a SELECT en MongoDB\n" + query_parts[0]
+        return query
     
     @staticmethod
     def _generate_aggregate(collection_name, mongo_query):
-        """Genera una consulta aggregate() para la shell de MongoDB."""
+        """
+        Genera una consulta aggregate() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
         pipeline = mongo_query.get("pipeline", [])
         
-        # Formatear pipeline para que sea legible
-        formatted_pipeline = MongoShellQueryGenerator._format_json_array(pipeline)
+        # Formatear el pipeline para mejor legibilidad
+        formatted_pipeline = MongoShellQueryGenerator._format_json_array(pipeline, indent=2)
         
-        return f"db.{collection_name}.aggregate({formatted_pipeline}).pretty()"
+        # Construir la consulta completa
+        query = "// Consulta de agregación en MongoDB\n" + \
+                f"db.{collection_name}.aggregate(\n" + \
+                f"{formatted_pipeline}\n" + \
+                ").pretty()"
+        
+        return query
     
     @staticmethod
     def _generate_insert(collection_name, mongo_query):
-        """Genera una consulta insertOne() para la shell de MongoDB."""
+        """
+        Genera una consulta insertOne() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
         document = mongo_query.get("document", {})
         
-        # Formatear documento para que sea legible
-        formatted_doc = MongoShellQueryGenerator._format_json(document)
+        # Formatear el documento para mejor legibilidad
+        formatted_doc = MongoShellQueryGenerator._format_json(document, indent=2)
         
-        return f"db.{collection_name}.insertOne({formatted_doc})"
+        # Construir la consulta completa
+        query = "// Inserción de documento en MongoDB\n" + \
+                f"db.{collection_name}.insertOne(\n" + \
+                f"{formatted_doc}\n" + \
+                ")"
+        
+        return query
     
     @staticmethod
     def _generate_update(collection_name, mongo_query):
-        """Genera una consulta updateMany() para la shell de MongoDB."""
+        """
+        Genera una consulta updateMany() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
         query_data = mongo_query.get("query", {})
         
         if not query_data or not isinstance(query_data, dict):
-            return f"// Error: Formato de consulta update inválido"
+            return "// Error: Formato de consulta update inválido"
         
         filter_query = query_data.get("query", {})
         update_query = query_data.get("update", {})
         
-        # Formatear query y update para que sean legibles
-        formatted_filter = MongoShellQueryGenerator._format_json(filter_query)
-        formatted_update = MongoShellQueryGenerator._format_json(update_query)
+        # Formatear las partes para mejor legibilidad
+        formatted_filter = MongoShellQueryGenerator._format_json(filter_query, indent=2)
+        formatted_update = MongoShellQueryGenerator._format_json(update_query, indent=2)
         
-        return f"db.{collection_name}.updateMany({formatted_filter}, {formatted_update})"
+        # Construir la consulta completa
+        query = "// Actualización de documentos en MongoDB\n" + \
+                f"db.{collection_name}.updateMany(\n" + \
+                f"{formatted_filter},\n" + \
+                f"{formatted_update}\n" + \
+                ")"
+        
+        return query
     
     @staticmethod
     def _generate_delete(collection_name, mongo_query):
-        """Genera una consulta deleteMany() para la shell de MongoDB."""
+        """
+        Genera una consulta deleteMany() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
         query_filter = mongo_query.get("query", {})
         
-        # Formatear filtro para que sea legible
-        formatted_filter = MongoShellQueryGenerator._format_json(query_filter)
+        # Formatear el filtro para mejor legibilidad
+        formatted_filter = MongoShellQueryGenerator._format_json(query_filter, indent=2)
         
-        return f"db.{collection_name}.deleteMany({formatted_filter})"
+        # Construir la consulta completa
+        query = "// Eliminación de documentos en MongoDB\n" + \
+                f"db.{collection_name}.deleteMany(\n" + \
+                f"{formatted_filter}\n" + \
+                ")"
+        
+        return query
+    
+    @staticmethod
+    def _generate_create_collection(collection_name, mongo_query):
+        """
+        Genera una consulta createCollection() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
+        options = mongo_query.get("options", {})
+        
+        # Formatear opciones para mejor legibilidad
+        formatted_options = MongoShellQueryGenerator._format_json(options, indent=2)
+        
+        # Construir la consulta completa
+        if options:
+            query = "// Creación de colección en MongoDB\n" + \
+                    f"db.createCollection(\n" + \
+                    f"  \"{collection_name}\",\n" + \
+                    f"  {formatted_options}\n" + \
+                    ")"
+        else:
+            query = "// Creación de colección en MongoDB\n" + \
+                    f"db.createCollection(\"{collection_name}\")"
+        
+        return query
+    
+    @staticmethod
+    def _generate_drop_collection(collection_name, mongo_query):
+        """
+        Genera una consulta drop() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
+        return "// Eliminación de colección en MongoDB\n" + \
+               f"db.{collection_name}.drop()"
     
     @staticmethod
     def _format_json(obj, indent=2, current_indent=2):
         """
         Formatea un objeto JSON (diccionario) para que sea legible en la consola de MongoDB.
-        Maneja la indentación y formato específico de MongoDB.
+        
+        Args:
+            obj: Objeto a formatear
+            indent (int): Cantidad de espacios para indentación
+            current_indent (int): Indentación actual
+            
+        Returns:
+            str: JSON formateado
         """
-        if not obj:
-            return "{}"
+        if obj is None:
+            return "null"
         
         if not isinstance(obj, dict):
-            return str(obj)
+            if isinstance(obj, str):
+                return f'"{obj}"'
+            elif isinstance(obj, bool):
+                return "true" if obj else "false"
+            else:
+                return str(obj)
         
         # Si es un diccionario vacío, devuelve {}
         if len(obj) == 0:
@@ -154,17 +298,16 @@ class MongoShellQueryGenerator:
                 result += MongoShellQueryGenerator._format_json_array(value, indent, current_indent + indent)
             elif isinstance(value, str):
                 # Cadenas de texto
-                if key.startswith("$") and value.startswith("$"):
-                    # Referencias a campos ($field)
-                    result += f'"{value}"'
-                else:
-                    result += f'"{value}"'
+                result += f'"{value}"'
             elif value is None:
                 # Valores nulos
                 result += "null"
             else:
                 # Otros valores (números, booleanos)
-                result += str(value)
+                if isinstance(value, bool):
+                    result += "true" if value else "false"
+                else:
+                    result += str(value)
             
             # Añadir coma si no es el último elemento
             if i < len(items) - 1:
@@ -180,8 +323,22 @@ class MongoShellQueryGenerator:
     @staticmethod
     def _format_json_array(arr, indent=2, current_indent=2):
         """
-        Formatea un array JSON para que sea legible en la consola de MongoDB.
+        Formatea un array JSON para la shell de MongoDB.
+        
+        Args:
+            arr: Array a formatear
+            indent (int): Cantidad de espacios para indentación
+            current_indent (int): Indentación actual
+            
+        Returns:
+            str: Array formateado
         """
+        if arr is None:
+            return "null"
+        
+        if not isinstance(arr, list):
+            return str(arr)
+        
         if not arr:
             return "[]"
         
@@ -202,6 +359,8 @@ class MongoShellQueryGenerator:
                 result += f'"{item}"'
             elif item is None:
                 result += "null"
+            elif isinstance(item, bool):
+                result += "true" if item else "false"
             else:
                 result += str(item)
             

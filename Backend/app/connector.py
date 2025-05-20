@@ -1,59 +1,139 @@
 from bson import ObjectId
 from pymongo import MongoClient
 import time
+import logging
 
-# Variable global para el singleton
+# Configurar logging
+logger = logging.getLogger(__name__)
+
+# Variable global para el patrón singleton
 _instance = None
 
 class MongoDBConnector:
+    """
+    Conector para MongoDB que implementa el patrón singleton.
+    Proporciona métodos para interactuar con la base de datos MongoDB.
+    """
+    
     @staticmethod
     def get_instance(uri, database_name=None):
         """
         Método estático para obtener la instancia singleton del conector.
+        
+        Args:
+            uri (str): URI de conexión a MongoDB.
+            database_name (str, optional): Nombre de la base de datos.
+            
+        Returns:
+            MongoDBConnector: Instancia única del conector.
         """
         global _instance
         if _instance is None:
             _instance = MongoDBConnector(uri, database_name)
+        elif database_name and _instance.database_name != database_name:
+            # Si se solicita cambiar la base de datos en la instancia existente
+            _instance.set_database(database_name)
         return _instance
     
     def __init__(self, uri, database_name=None):
         """
         Inicializa el conector con MongoDB.
-        :param uri: URI de conexión a MongoDB.
-        :param database_name: Nombre de la base de datos (opcional).
+        
+        Args:
+            uri (str): URI de conexión a MongoDB.
+            database_name (str, optional): Nombre de la base de datos.
         """
         try:
-            print(f"Iniciando conexión a MongoDB: {uri}")
-            # No cerrar automáticamente la conexión
-            self.client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+            logger.info(f"Iniciando conexión a MongoDB: {uri}")
+            # Opciones de conexión para mayor estabilidad
+            self.client = MongoClient(
+                uri, 
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+                socketTimeoutMS=30000,
+                maxPoolSize=50,
+                retryWrites=True
+            )
             self.uri = uri
+            self.db = None
+            self.database_name = None
             
             # Verificar conexión
             self.client.admin.command('ping')
-            print("Conexión exitosa a MongoDB")
+            logger.info("Conexión exitosa a MongoDB")
             
-            # Listar bases de datos disponibles
-            self.available_databases = self.client.list_database_names()
-            print(f"Bases de datos disponibles: {self.available_databases}")
+            # Listar bases de datos disponibles (excluyendo bases del sistema)
+            self.available_databases = self._filter_system_databases(self.client.list_database_names())
+            logger.info(f"Bases de datos disponibles: {self.available_databases}")
             
             # Establecer la base de datos si se proporcionó
             if database_name:
                 self.set_database(database_name)
             else:
-                self.db = None
-                print("No se ha seleccionado ninguna base de datos. Use set_database() para seleccionar una.")
+                logger.info("No se ha seleccionado ninguna base de datos. Use set_database() para seleccionar una.")
                 
         except Exception as e:
-            print(f"Error al conectar a MongoDB: {e}")
+            logger.error(f"Error al conectar a MongoDB: {e}")
             import traceback
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             raise
+    
+    def is_connected(self):
+        """
+        Verifica si la conexión a MongoDB está activa.
+        
+        Returns:
+            bool: True si está conectado, False en caso contrario.
+        """
+        try:
+            # Intentar ejecutar un comando simple
+            self.client.admin.command('ping')
+            return True
+        except Exception as e:
+            logger.error(f"Error de conexión: {e}")
+            return False
+    
+    def is_database_selected(self):
+        """
+        Verifica si hay una base de datos seleccionada actualmente.
+        
+        Returns:
+            bool: True si hay una base de datos seleccionada.
+        """
+        return self.db is not None and self.database_name is not None
+    
+    def get_current_database(self):
+        """
+        Obtiene el nombre de la base de datos actualmente seleccionada.
+        
+        Returns:
+            str: Nombre de la base de datos actual o None.
+        """
+        return self.database_name
+    
+    def _filter_system_databases(self, databases):
+        """
+        Filtra las bases de datos del sistema.
+        
+        Args:
+            databases (list): Lista de nombres de bases de datos.
+            
+        Returns:
+            list: Lista filtrada.
+        """
+        # Bases de datos del sistema a excluir
+        system_dbs = ['admin', 'local', 'config']
+        return [db for db in databases if db not in system_dbs]
     
     def set_database(self, database_name):
         """
         Establece la base de datos a utilizar.
-        :param database_name: Nombre de la base de datos.
-        :return: Lista de colecciones disponibles en la base de datos.
+        
+        Args:
+            database_name (str): Nombre de la base de datos.
+            
+        Returns:
+            list: Lista de colecciones disponibles.
         """
         try:
             self.db = self.client[database_name]
@@ -61,52 +141,70 @@ class MongoDBConnector:
             
             # Listar colecciones disponibles
             collections = self.db.list_collection_names()
-            print(f"Conexión establecida con base de datos: {database_name}")
-            print(f"Colecciones disponibles en {database_name}: {collections}")
+            logger.info(f"Conexión establecida con base de datos: {database_name}")
+            logger.info(f"Colecciones disponibles en {database_name}: {collections}")
             
             return collections
         except Exception as e:
-            print(f"Error al seleccionar la base de datos {database_name}: {e}")
+            logger.error(f"Error al seleccionar la base de datos {database_name}: {e}")
             import traceback
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             raise
     
     def get_available_databases(self):
         """
         Obtiene la lista de bases de datos disponibles.
-        :return: Lista de bases de datos.
+        
+        Returns:
+            list: Lista de bases de datos.
         """
         try:
             # Actualizar la lista de bases de datos
-            self.available_databases = self.client.list_database_names()
+            all_databases = self.client.list_database_names()
+            self.available_databases = self._filter_system_databases(all_databases)
             return self.available_databases
         except Exception as e:
-            print(f"Error al obtener bases de datos disponibles: {e}")
+            logger.error(f"Error al obtener bases de datos disponibles: {e}")
             self._try_reconnect()
             # Intentar nuevamente después de reconectar
-            return self.client.list_database_names() if hasattr(self, 'client') else []
+            try:
+                all_databases = self.client.list_database_names()
+                return self._filter_system_databases(all_databases)
+            except:
+                return []
     
     def _try_reconnect(self):
         """
         Intenta reconectar al servidor MongoDB.
         """
         try:
-            print("Intentando reconectar a MongoDB...")
-            self.client = MongoClient(self.uri, serverSelectionTimeoutMS=5000)
+            logger.info("Intentando reconectar a MongoDB...")
+            self.client = MongoClient(
+                self.uri, 
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+                socketTimeoutMS=30000,
+                maxPoolSize=50,
+                retryWrites=True
+            )
             self.client.admin.command('ping')
-            print("Reconexión exitosa")
+            logger.info("Reconexión exitosa")
             
             # Si había una base de datos seleccionada, volver a seleccionarla
             if hasattr(self, 'database_name') and self.database_name:
                 self.set_database(self.database_name)
         except Exception as e:
-            print(f"Error al reconectar: {e}")
+            logger.error(f"Error al reconectar: {e}")
     
     def get_collections(self, database_name=None):
         """
         Obtiene las colecciones disponibles en una base de datos.
-        :param database_name: Nombre de la base de datos (opcional, usa la actual si no se proporciona).
-        :return: Lista de colecciones.
+        
+        Args:
+            database_name (str, optional): Nombre de la base de datos.
+            
+        Returns:
+            list: Lista de colecciones.
         """
         try:
             if database_name:
@@ -118,7 +216,7 @@ class MongoDBConnector:
             
             return db.list_collection_names()
         except Exception as e:
-            print(f"Error al obtener colecciones: {e}")
+            logger.error(f"Error al obtener colecciones: {e}")
             self._try_reconnect()
             # Intentar nuevamente después de reconectar
             try:
@@ -126,177 +224,267 @@ class MongoDBConnector:
                     return self.client[database_name].list_collection_names()
                 elif hasattr(self, 'db') and self.db:
                     return self.db.list_collection_names()
+                return []
             except:
-                pass
-            return []
+                return []
 
     def execute_query(self, collection_name, query):
         """
         Ejecuta una consulta en MongoDB.
-        :param collection_name: Nombre de la colección.
-        :param query: Consulta en formato MongoDB.
-        :return: Resultado de la consulta.
+        
+        Args:
+            collection_name (str): Nombre de la colección.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            Resultado de la consulta.
         """
         max_retries = 3
         retry_count = 0
         
         while retry_count < max_retries:
             try:
-                if not hasattr(self, 'db') or self.db is None:
+                # Verificar si hay una base de datos seleccionada
+                if not self.is_database_selected():
                     raise ValueError("No se ha seleccionado ninguna base de datos. Use set_database() primero.")
-                    
-                # Normalizar nombre de colección (MongoDB distingue mayúsculas/minúsculas)
-                collection_name = collection_name.lower()
-                print(f"Ejecutando consulta en colección: {collection_name}")
-                print(f"Consulta a ejecutar: {query}")
+                
+                # Verificar si la colección existe y crearla si es necesario
+                if collection_name not in self.db.list_collection_names():
+                    # Si la colección no existe, verificar si es una operación de creación
+                    if query.get("operation") == "create_collection":
+                        # Crear la colección explícitamente
+                        options = query.get("options", {})
+                        self.db.create_collection(collection_name, **options)
+                        return {"created": True, "collection_name": collection_name}
+                    else:
+                        # Para otras operaciones, crear la colección vacía automáticamente
+                        logger.warning(f"La colección {collection_name} no existe. Se creará automáticamente.")
                 
                 collection = self.db[collection_name]
                 operation = query.get("operation")
-                print(f"Operación a realizar: {operation}")
+                logger.info(f"Ejecutando operación {operation} en la colección {collection_name}")
                 
+                # Manejar cada tipo de operación
                 if operation == "find":
-                    mongo_query = query.get("query", {})
-                    projection = query.get("projection", None)
-                    sort = query.get("sort", None)
-                    limit = query.get("limit", None)
-                    
-                    print(f"Consulta de búsqueda: {mongo_query}")
-                    print(f"Proyección: {projection}")
-                    print(f"Ordenamiento: {sort}")
-                    print(f"Límite: {limit}")
-                    
-                    # Preparar el cursor
-                    cursor = collection.find(mongo_query, projection)
-                    
-                    # Aplicar ordenamiento si existe
-                    if sort:
-                        cursor = cursor.sort(list(sort.items()))
-                    
-                    # Aplicar límite si existe
-                    if limit is not None:
-                        cursor = cursor.limit(limit)
-                    
-                    # Ejecutar la consulta
-                    results = list(cursor)
-                    print(f"Resultados encontrados: {len(results)}")
-                    
-                    # Convertir ObjectId a string para serialización JSON
-                    for result in results:
-                        if "_id" in result:
-                            result["_id"] = str(result["_id"])
-                    
-                    return results
-                    
+                    return self._execute_find(collection, query)
                 elif operation == "aggregate":
-                    pipeline = query.get("pipeline", [])
-                    print(f"Pipeline de agregación: {pipeline}")
-                    
-                    # Ejecutar la consulta de agregación
-                    results = list(collection.aggregate(pipeline))
-                    print(f"Resultados de agregación encontrados: {len(results)}")
-                    
-                    # Convertir ObjectId a string para serialización JSON
-                    for result in results:
-                        if "_id" in result and isinstance(result["_id"], dict):
-                            # Si _id es un documento (ej. en GROUP BY)
-                            result["_id"] = str(result["_id"])
-                        elif "_id" in result:
-                            result["_id"] = str(result["_id"])
-                    
-                    return results
-                    
+                    return self._execute_aggregate(collection, query)
                 elif operation == "insert":
-                    document = query.get("document")
-                    print(f"Documento a insertar: {document}")
-                    result = collection.insert_one(document)
-                    return {"inserted_id": str(result.inserted_id)}
-                    
+                    return self._execute_insert(collection, query)
                 elif operation == "update":
-                    update_query = query.get("query")
-                    if not isinstance(update_query, dict) or "query" not in update_query or "update" not in update_query:
-                        print("Error: Formato inválido para consulta update. Se espera {'query': {...}, 'update': {...}}")
-                        print(f"Consulta recibida: {update_query}")
-                        raise ValueError("Formato inválido para consulta update")
-                    
-                    print(f"Consulta de actualización: filtro={update_query['query']}, valores={update_query['update']}")
-                    result = collection.update_many(update_query["query"], update_query["update"])
-                    return {"modified_count": result.modified_count, "matched_count": result.matched_count}
-                    
+                    return self._execute_update(collection, query)
                 elif operation == "delete":
-                    delete_query = query.get("query")
-                    print(f"Consulta de eliminación: {delete_query}")
-                    result = collection.delete_many(delete_query)
-                    return {"deleted_count": result.deleted_count}
-                    
-                # Operaciones de creación y alteración de colecciones/índices
+                    return self._execute_delete(collection, query)
                 elif operation == "create_collection":
-                    collection_name = query.get("collection_name")
-                    options = query.get("options", {})
-                    print(f"Creando colección: {collection_name}")
-                    self.db.create_collection(collection_name, **options)
+                    # Ya manejado arriba si la colección no existe
                     return {"created": True, "collection_name": collection_name}
-                    
-                elif operation == "create_index":
-                    index_spec = query.get("index_spec")
-                    options = query.get("options", {})
-                    print(f"Creando índice en {collection_name}: {index_spec}")
-                    result = collection.create_index(index_spec, **options)
-                    return {"created": True, "index_name": result}
-                    
                 elif operation == "drop_collection":
-                    print(f"Eliminando colección: {collection_name}")
-                    collection.drop()
-                    return {"dropped": True, "collection_name": collection_name}
-                    
-                elif operation == "drop_index":
-                    index_name = query.get("index_name")
-                    print(f"Eliminando índice {index_name} de {collection_name}")
-                    collection.drop_index(index_name)
-                    return {"dropped": True, "index_name": index_name}
-                    
-                # Operaciones específicas de MongoDB
-                elif operation == "count":
-                    mongo_query = query.get("query", {})
-                    print(f"Contando documentos con filtro: {mongo_query}")
-                    count = collection.count_documents(mongo_query)
-                    return {"count": count}
-                    
-                elif operation == "distinct":
-                    field = query.get("field")
-                    mongo_query = query.get("query", {})
-                    print(f"Obteniendo valores distintos de {field} con filtro: {mongo_query}")
-                    values = collection.distinct(field, mongo_query)
-                    return {"distinct_values": values}
-                    
-                elif operation == "bulk_write":
-                    operations = query.get("operations", [])
-                    options = query.get("options", {})
-                    print(f"Ejecutando operaciones bulk_write: {len(operations)} operaciones")
-                    result = collection.bulk_write(operations, **options)
-                    return {
-                        "inserted_count": result.inserted_count,
-                        "modified_count": result.modified_count,
-                        "deleted_count": result.deleted_count,
-                        "upserted_count": result.upserted_count
-                    }
-                
-                raise ValueError(f"Operación no soportada: {operation}")
+                    return self._execute_drop_collection(collection)
+                else:
+                    raise ValueError(f"Operación no soportada: {operation}")
                 
             except Exception as e:
-                print(f"Error al ejecutar consulta (intento {retry_count+1}): {e}")
+                logger.error(f"Error al ejecutar consulta (intento {retry_count+1}): {e}")
                 retry_count += 1
                 
-                if "MongoClient after close" in str(e):
-                    print("Detectado error de cliente cerrado. Intentando reconectar...")
+                if "MongoClient after close" in str(e) or "not connected" in str(e).lower():
+                    logger.warning("Detectado error de conexión. Intentando reconectar...")
                     self._try_reconnect()
-                    # Esperar un momento antes de reintentar
-                    time.sleep(1)
+                    time.sleep(1)  # Esperar un momento antes de reintentar
                 elif retry_count >= max_retries:
                     import traceback
-                    print(traceback.format_exc())
+                    logger.error(traceback.format_exc())
                     raise
                 else:
-                    # Esperar un poco antes de reintentar para otros errores
-                    time.sleep(0.5)
+                    time.sleep(0.5)  # Esperar un poco antes de reintentar para otros errores
         
         raise Exception("Se excedió el número máximo de intentos de consulta")
+    
+    def _serialize_results(self, results):
+        """
+        Serializa los resultados para que sean compatibles con JSON.
+        
+        Args:
+            results: Resultados de la consulta.
+            
+        Returns:
+            Resultados serializados.
+        """
+        if isinstance(results, list):
+            for result in results:
+                if isinstance(result, dict):
+                    for key, value in list(result.items()):
+                        if isinstance(value, ObjectId):
+                            result[key] = str(value)
+                        elif isinstance(value, dict):
+                            # Recursivamente procesar subdocumentos
+                            self._serialize_dict(value)
+        elif isinstance(results, dict):
+            self._serialize_dict(results)
+        return results
+    
+    def _serialize_dict(self, document):
+        """
+        Serializa un diccionario recursivamente.
+        
+        Args:
+            document (dict): Diccionario a serializar.
+        """
+        for key, value in list(document.items()):
+            if isinstance(value, ObjectId):
+                document[key] = str(value)
+            elif isinstance(value, dict):
+                self._serialize_dict(value)
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, dict):
+                        self._serialize_dict(item)
+                    elif isinstance(item, ObjectId):
+                        value[i] = str(item)
+    
+    def _execute_find(self, collection, query):
+        """
+        Ejecuta una operación find() en MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            list: Resultados de la consulta.
+        """
+        mongo_query = query.get("query", {})
+        projection = query.get("projection", None)
+        sort = query.get("sort", None)
+        limit = query.get("limit", None)
+        skip = query.get("skip", None)
+        
+        logger.info(f"Ejecutando find con filtro: {mongo_query}")
+        
+        # Preparar la consulta
+        cursor = collection.find(mongo_query, projection)
+        
+        # Aplicar ordenamiento si existe
+        if sort:
+            logger.info(f"Ordenamiento: {sort}")
+            cursor = cursor.sort(list(sort.items()))
+        
+        # Aplicar skip si existe
+        if skip:
+            logger.info(f"Skip: {skip}")
+            cursor = cursor.skip(skip)
+        
+        # Aplicar límite si existe
+        if limit is not None:
+            logger.info(f"Límite: {limit}")
+            cursor = cursor.limit(limit)
+        
+        # Ejecutar la consulta y convertir el cursor a lista
+        results = list(cursor)
+        logger.info(f"Resultados encontrados: {len(results)}")
+        
+        # Serializar resultados para JSON
+        return self._serialize_results(results)
+    
+    def _execute_aggregate(self, collection, query):
+        """
+        Ejecuta una operación aggregate() en MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            list: Resultados de la consulta.
+        """
+        pipeline = query.get("pipeline", [])
+        logger.info(f"Ejecutando aggregate con pipeline: {pipeline}")
+        
+        # Ejecutar la agregación
+        results = list(collection.aggregate(pipeline))
+        logger.info(f"Resultados de agregación: {len(results)}")
+        
+        # Serializar resultados para JSON
+        return self._serialize_results(results)
+    
+    def _execute_insert(self, collection, query):
+        """
+        Ejecuta una operación insertOne() en MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            dict: Resultado de la operación.
+        """
+        document = query.get("document", {})
+        logger.info(f"Insertando documento: {document}")
+        
+        # Ejecutar la inserción
+        result = collection.insert_one(document)
+        return {"inserted_id": str(result.inserted_id)}
+    
+    def _execute_update(self, collection, query):
+        """
+        Ejecuta una operación updateMany() en MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            dict: Resultado de la operación.
+        """
+        update_query = query.get("query", {})
+        
+        filter_query = update_query.get("query", {})
+        update_data = update_query.get("update", {})
+        
+        logger.info(f"Actualizando documentos con filtro: {filter_query}")
+        logger.info(f"Datos de actualización: {update_data}")
+        
+        # Si update_data no tiene operadores de actualización, usar $set
+        if update_data and not any(key.startswith("$") for key in update_data.keys()):
+            update_data = {"$set": update_data}
+            logger.info(f"Añadiendo operador $set implícito: {update_data}")
+        
+        # Ejecutar la actualización
+        result = collection.update_many(filter_query, update_data)
+        return {
+            "matched_count": result.matched_count,
+            "modified_count": result.modified_count,
+            "upserted_id": str(result.upserted_id) if result.upserted_id else None
+        }
+    
+    def _execute_delete(self, collection, query):
+        """
+        Ejecuta una operación deleteMany() en MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            dict: Resultado de la operación.
+        """
+        delete_query = query.get("query", {})
+        logger.info(f"Eliminando documentos con filtro: {delete_query}")
+        
+        # Ejecutar la eliminación
+        result = collection.delete_many(delete_query)
+        return {"deleted_count": result.deleted_count}
+    
+    def _execute_drop_collection(self, collection):
+        """
+        Ejecuta una operación drop() en una colección de MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            
+        Returns:
+            dict: Resultado de la operación.
+        """
+        logger.info(f"Eliminando colección: {collection.name}")
+        collection.drop()
+        return {"dropped": True, "collection_name": collection.name}
