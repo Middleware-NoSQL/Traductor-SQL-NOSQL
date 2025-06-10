@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 
 # Inicializar Flask
 app = Flask(__name__)
-CORS(app)  # Habilitar CORS para todas las rutas
+CORS(app, 
+     origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization", "Accept"],
+     supports_credentials=True)
 
 # Configuración JWT
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -62,7 +66,7 @@ except Exception as e:
     logger.error(traceback.format_exc())
 
 # Registrar blueprints de autenticación (nuevo)
-app.register_blueprint(create_auth_blueprint(user_model))
+app.register_blueprint(create_auth_blueprint(user_model), url_prefix='/api/auth')
 app.register_blueprint(create_admin_blueprint(user_model))
 
 # Manejadores de errores JWT (nuevo)

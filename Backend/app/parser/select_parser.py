@@ -177,6 +177,229 @@ class SelectParser(BaseParser):
         
         return False
     
+
+    def _get_ddl_parser(self):
+        """Obtiene el parser DDL (lazy loading)."""
+        if not hasattr(self, '_ddl_parser') or self._ddl_parser is None:
+            try:
+                from .ddl_parser import DDLParser
+                self._ddl_parser = DDLParser()
+            except ImportError:
+                logger.warning("DDLParser no disponible")
+                self._ddl_parser = None
+        return self._ddl_parser
+
+
+    def get_create_table_info(self):
+        """
+        ✅ NUEVO: Extrae información detallada de CREATE TABLE
+        Returns:
+            dict: Información completa de la tabla
+        """
+        try:
+            # Extraer nombre de tabla
+            table_name = self.get_table_name()
+            
+            # Extraer definición de columnas entre paréntesis
+            columns_match = re.search(r'CREATE\s+TABLE\s+\w+\s*\((.*)\)', self.query, re.IGNORECASE | re.DOTALL)
+            if not columns_match:
+                raise ValueError("No se encontró definición de columnas en CREATE TABLE")
+            
+            columns_str = columns_match.group(1).strip()
+            
+            # Parsear columnas individuales
+            columns = self.parse_columns_definition(columns_str)
+            
+            # Extraer constraints y índices
+            constraints = self.extract_constraints(columns_str)
+            
+            create_info = {
+                'table_name': table_name,
+                'columns': columns,
+                'constraints': constraints,
+                'total_columns': len(columns),
+                'has_primary_key': any(col.get('is_primary_key', False) for col in columns),
+                'has_indexes': len(constraints.get('indexes', [])) > 0,
+                'original_definition': columns_str
+            }
+            
+            logger.info(f"Información de CREATE TABLE extraída: {table_name} con {len(columns)} columnas")
+            return create_info
+            
+        except Exception as e:
+            logger.error(f"Error extrayendo información de CREATE TABLE: {e}")
+            return {
+                'table_name': self.get_table_name(),
+                'columns': [],
+                'constraints': {},
+                'total_columns': 0,
+                'has_primary_key': False,
+                'has_indexes': False,
+                'original_definition': '',
+                'error': str(e)
+            }
+
+
+    def parse_columns_definition(self, columns_str):
+        """
+        ✅ NUEVO: Parsea la definición de columnas
+        """
+        columns = []
+        
+        # Dividir por comas (pero respetando paréntesis anidados)
+        column_definitions = self.split_columns(columns_str)
+        
+        for col_def in column_definitions:
+            col_def = col_def.strip()
+            if not col_def:
+                continue
+                
+            # Saltar constraints globales (PRIMARY KEY, FOREIGN KEY, etc.)
+            if any(keyword in col_def.upper() for keyword in ['PRIMARY KEY (', 'FOREIGN KEY', 'INDEX', 'KEY']):
+                continue
+            
+            column_info = self.parse_single_column(col_def)
+            if column_info:
+                columns.append(column_info)
+        
+        return columns
+
+
+    def split_columns(self, columns_str):
+        """
+        ✅ NUEVO: Divide columnas respetando paréntesis
+        """
+        columns = []
+        current_column = ""
+        paren_count = 0
+        
+        for char in columns_str:
+            if char == '(':
+                paren_count += 1
+            elif char == ')':
+                paren_count -= 1
+            elif char == ',' and paren_count == 0:
+                columns.append(current_column.strip())
+                current_column = ""
+                continue
+            
+            current_column += char
+        
+        if current_column.strip():
+            columns.append(current_column.strip())
+        
+        return columns
+
+
+    def parse_single_column(self, col_def):
+        """
+        ✅ NUEVO: Parsea una sola columna
+        """
+        try:
+            parts = col_def.split()
+            if len(parts) < 2:
+                return None
+            
+            column_name = parts[0]
+            data_type = parts[1]
+            
+            # Extraer información adicional
+            is_primary_key = 'PRIMARY KEY' in col_def.upper()
+            is_not_null = 'NOT NULL' in col_def.upper()
+            is_unique = 'UNIQUE' in col_def.upper()
+            
+            # Extraer valor por defecto
+            default_value = None
+            default_match = re.search(r'DEFAULT\s+(\S+)', col_def, re.IGNORECASE)
+            if default_match:
+                default_value = default_match.group(1)
+            
+            return {
+                'name': column_name,
+                'type': data_type,
+                'is_primary_key': is_primary_key,
+                'is_not_null': is_not_null,
+                'is_unique': is_unique,
+                'default_value': default_value,
+                'mongo_type': self.map_sql_to_mongo_type(data_type)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error parseando columna '{col_def}': {e}")
+            return None
+
+
+    def map_sql_to_mongo_type(self, sql_type):
+        """
+        ✅ NUEVO: Mapea tipos SQL a MongoDB
+        """
+        sql_type_upper = sql_type.upper()
+        
+        if 'INT' in sql_type_upper:
+            return 'int'
+        elif 'VARCHAR' in sql_type_upper or 'TEXT' in sql_type_upper:
+            return 'string'
+        elif 'DECIMAL' in sql_type_upper or 'FLOAT' in sql_type_upper or 'DOUBLE' in sql_type_upper:
+            return 'number'
+        elif 'BOOLEAN' in sql_type_upper or 'BOOL' in sql_type_upper:
+            return 'bool'
+        elif 'DATE' in sql_type_upper or 'TIMESTAMP' in sql_type_upper:
+            return 'date'
+        else:
+            return 'mixed'
+
+    def extract_constraints(self, columns_str):
+        """
+        ✅ NUEVO: Extrae constraints y índices
+        """
+        constraints = {
+            'primary_keys': [],
+            'foreign_keys': [],
+            'indexes': [],
+            'unique_constraints': []
+        }
+        
+        # Buscar PRIMARY KEY
+        pk_match = re.search(r'PRIMARY\s+KEY\s*\(([^)]+)\)', columns_str, re.IGNORECASE)
+        if pk_match:
+            pk_fields = [field.strip() for field in pk_match.group(1).split(',')]
+            constraints['primary_keys'] = pk_fields
+        
+        # Buscar FOREIGN KEY
+        fk_matches = re.finditer(r'FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+(\w+)\s*\(([^)]+)\)', columns_str, re.IGNORECASE)
+        for fk_match in fk_matches:
+            constraints['foreign_keys'].append({
+                'columns': [col.strip() for col in fk_match.group(1).split(',')],
+                'referenced_table': fk_match.group(2),
+                'referenced_columns': [col.strip() for col in fk_match.group(3).split(',')]
+            })
+        
+        return constraints
+
+    def get_drop_table_info(self):
+        """
+        Obtiene información de una consulta DROP TABLE.
+        
+        Returns:
+            dict: Información de la tabla a eliminar
+        """
+        parser = self._get_ddl_parser()
+        if parser and self.get_query_type() == "DROP":
+            return parser.parse_drop_table(self.sql_query)
+        return None
+
+    def get_supported_sql_types(self):
+        """
+        Obtiene los tipos SQL soportados.
+        
+        Returns:
+            dict: Tipos SQL soportados por categoría
+        """
+        parser = self._get_ddl_parser()
+        if parser:
+            return parser.get_supported_sql_types()
+        return {}
+
     def extract_functions(self, fields):
         """
         Extrae información de las funciones de agregación en los campos.

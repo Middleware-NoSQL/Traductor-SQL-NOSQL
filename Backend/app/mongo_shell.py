@@ -26,6 +26,7 @@ class MongoShellQueryGenerator:
             "find": MongoShellQueryGenerator._generate_find,
             "aggregate": MongoShellQueryGenerator._generate_aggregate,
             "insert": MongoShellQueryGenerator._generate_insert,
+            "INSERT_MANY": MongoShellQueryGenerator._generate_insert_many,  # 🔧 NUEVO
             "update": MongoShellQueryGenerator._generate_update,
             "delete": MongoShellQueryGenerator._generate_delete,
             "create_collection": MongoShellQueryGenerator._generate_create_collection,
@@ -137,6 +138,35 @@ class MongoShellQueryGenerator:
         query = "// Inserción de documento en MongoDB\n" + \
                 f"db.{collection_name}.insertOne(\n" + \
                 f"{formatted_doc}\n" + \
+                ")"
+        
+        return query
+    
+    @staticmethod
+    def _generate_insert_many(collection_name, mongo_query):
+        """
+        🔧 NUEVO: Genera una consulta insertMany() para la shell de MongoDB.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            mongo_query (dict): Consulta en formato MongoDB
+            
+        Returns:
+            str: Consulta para la shell de MongoDB
+        """
+        documents = mongo_query.get("documents", [])
+        count = len(documents)
+        
+        if not documents:
+            return f"// No hay documentos para insertar en {collection_name}"
+        
+        # Formatear el array de documentos para mejor legibilidad
+        formatted_docs = MongoShellQueryGenerator._format_json_array(documents, indent=2)
+        
+        # Construir la consulta completa
+        query = f"// Inserción de {count} documentos en MongoDB\n" + \
+                f"db.{collection_name}.insertMany(\n" + \
+                f"{formatted_docs}\n" + \
                 ")"
         
         return query

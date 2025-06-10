@@ -35,31 +35,30 @@ class WhereParser:
         logger.info(f"Condiciones WHERE traducidas: {conditions}")
         return conditions
     
+
     def extract_where_clause(self, query):
         """
-        Extrae la cláusula WHERE de una consulta SQL.
-        
-        Args:
-            query (str): Consulta SQL completa
-            
-        Returns:
-            str: Cláusula WHERE o None si no existe
+        🔧 MÉTODO CORREGIDO: Extrae WHERE sin incluir punto y coma
         """
-        # Normalizar la consulta
         query = " " + query.strip() + " "
         
-        # Expresión regular para extraer la cláusula WHERE
-        pattern = r'\sWHERE\s+(.*?)(?:\sGROUP BY|\sHAVING|\sORDER BY|\sLIMIT|\sOFFSET|\s;|\sUNION|\sINTERSECT|\sEXCEPT|\s$)'
+        # Regex corregido que excluye el punto y coma
+        pattern = r'\sWHERE\s+(.*?)(?:\s+GROUP\s+BY|\s+HAVING|\s+ORDER\s+BY|\s+LIMIT|\s+OFFSET|\s*;|\s*$)'
         match = re.search(pattern, query, re.IGNORECASE | re.DOTALL)
         
         if match:
             where_clause = match.group(1).strip()
-            logger.info(f"Cláusula WHERE extraída: {where_clause}")
+            
+            # 🆕 LIMPIEZA ADICIONAL: Remover punto y coma final
+            if where_clause.endswith(';'):
+                where_clause = where_clause[:-1].strip()
+            
+            logger.info(f"Cláusula WHERE extraída y limpia: '{where_clause}'")
             return where_clause
         
-        logger.info("No se encontró cláusula WHERE en la consulta")
         return None
-    
+
+
     def _parse_conditions(self, conditions_str, result):
         """
         Analiza las condiciones de una cláusula WHERE.
@@ -100,19 +99,28 @@ class WhereParser:
         
         # Si llegamos aquí, es una condición simple
         self._parse_simple_condition(conditions_str, result)
+
+
     
     def _parse_simple_condition(self, condition_str, result):
         """
-        Analiza una condición simple (sin AND/OR) de una cláusula WHERE.
+        🔧 MÉTODO CORREGIDO: Analiza una condición simple con limpieza de punto y coma
         
         Args:
             condition_str (str): String con la condición simple
             result (dict): Diccionario donde se almacenará la condición
         """
+        logger.debug(f"Parseando condición simple: '{condition_str}'")
+        
+        # 🆕 LIMPIEZA INICIAL: Remover punto y coma de toda la condición
+        condition_str = condition_str.strip()
+        if condition_str.endswith(';'):
+            condition_str = condition_str[:-1].strip()
+        
         # Operadores de comparación estándar
         operators = {
             ">=": "$gte",
-            "<=": "$lte",
+            "<=": "$lte", 
             "<>": "$ne",
             "!=": "$ne",
             "=": "$eq",
@@ -120,14 +128,21 @@ class WhereParser:
             "<": "$lt"
         }
         
-        # Manejar operadores especiales
+        # Manejar operadores especiales PRIMERO
+        
         # BETWEEN
-        between_match = re.search(r'([\w.]+)\s+BETWEEN\s+(.*?)\s+AND\s+(.*?)(?:\s|$)', condition_str, re.IGNORECASE)
+        between_match = re.search(r'([\w.]+)\s+BETWEEN\s+(.*?)\s+AND\s+(.*?)(?:\s*;|\s*$)', condition_str, re.IGNORECASE)
         if between_match:
             field = between_match.group(1).strip()
-            min_val = self._parse_value(between_match.group(2).strip())
-            max_val = self._parse_value(between_match.group(3).strip())
+            min_val_str = between_match.group(2).strip()
+            max_val_str = between_match.group(3).strip()
+            
+            # 🔧 LIMPIAR VALORES
+            min_val = self._parse_value(self._clean_value(min_val_str))
+            max_val = self._parse_value(self._clean_value(max_val_str))
+            
             result[field] = {"$gte": min_val, "$lte": max_val}
+            logger.debug(f"BETWEEN parseado: {field} BETWEEN {min_val} AND {max_val}")
             return
         
         # IN
@@ -135,8 +150,16 @@ class WhereParser:
         if in_match:
             field = in_match.group(1).strip()
             values_str = in_match.group(2).strip()
-            values = [self._parse_value(v.strip()) for v in self._split_values(values_str)]
+            
+            # 🔧 LIMPIAR CADA VALOR EN LA LISTA
+            values = []
+            for v in self._split_values(values_str):
+                cleaned_value = self._clean_value(v.strip())
+                parsed_value = self._parse_value(cleaned_value)
+                values.append(parsed_value)
+            
             result[field] = {"$in": values}
+            logger.debug(f"IN parseado: {field} IN {values}")
             return
         
         # NOT IN - Corregido para usar $nin
@@ -144,35 +167,53 @@ class WhereParser:
         if not_in_match:
             field = not_in_match.group(1).strip()
             values_str = not_in_match.group(2).strip()
-            values = [self._parse_value(v.strip()) for v in self._split_values(values_str)]
+            
+            # 🔧 LIMPIAR CADA VALOR EN LA LISTA
+            values = []
+            for v in self._split_values(values_str):
+                cleaned_value = self._clean_value(v.strip())
+                parsed_value = self._parse_value(cleaned_value)
+                values.append(parsed_value)
+            
             result[field] = {"$nin": values}
+            logger.debug(f"NOT IN parseado: {field} NOT IN {values}")
             return
         
         # LIKE
-        like_match = re.search(r'([\w.]+)\s+LIKE\s+(.*?)(?:\s|$)', condition_str, re.IGNORECASE)
+        like_match = re.search(r'([\w.]+)\s+LIKE\s+(.*?)(?:\s*;|\s*$)', condition_str, re.IGNORECASE)
         if like_match:
             field = like_match.group(1).strip()
-            pattern = like_match.group(2).strip()
-            if (pattern.startswith("'") and pattern.endswith("'")) or (pattern.startswith('"') and pattern.endswith('"')):
-                pattern = pattern[1:-1]  # Quitar comillas
+            pattern_str = like_match.group(2).strip()
+            
+            # 🔧 LIMPIAR PATRÓN
+            pattern_str = self._clean_value(pattern_str)
+            
+            if (pattern_str.startswith("'") and pattern_str.endswith("'")) or \
+            (pattern_str.startswith('"') and pattern_str.endswith('"')):
+                pattern = pattern_str[1:-1]  # Quitar comillas
+            else:
+                pattern = pattern_str
             
             # Convertir patrón SQL a regex MongoDB
             mongo_pattern = pattern.replace("%", ".*").replace("_", ".")
             result[field] = {"$regex": mongo_pattern, "$options": "i"}
+            logger.debug(f"LIKE parseado: {field} LIKE '{pattern}' -> regex: {mongo_pattern}")
             return
         
         # IS NULL
-        is_null_match = re.search(r'([\w.]+)\s+IS\s+NULL', condition_str, re.IGNORECASE)
+        is_null_match = re.search(r'([\w.]+)\s+IS\s+NULL(?:\s*;|\s*$)', condition_str, re.IGNORECASE)
         if is_null_match:
             field = is_null_match.group(1).strip()
             result[field] = {"$exists": False}
+            logger.debug(f"IS NULL parseado: {field}")
             return
         
         # IS NOT NULL
-        is_not_null_match = re.search(r'([\w.]+)\s+IS\s+NOT\s+NULL', condition_str, re.IGNORECASE)
+        is_not_null_match = re.search(r'([\w.]+)\s+IS\s+NOT\s+NULL(?:\s*;|\s*$)', condition_str, re.IGNORECASE)
         if is_not_null_match:
             field = is_not_null_match.group(1).strip()
             result[field] = {"$exists": True}
+            logger.debug(f"IS NOT NULL parseado: {field}")
             return
         
         # Operadores de comparación estándar
@@ -181,17 +222,51 @@ class WhereParser:
                 parts = condition_str.split(op, 1)
                 if len(parts) == 2:
                     field = parts[0].strip()
-                    value = self._parse_value(parts[1].strip())
+                    value_str = parts[1].strip()
+                    
+                    # 🔧 CRÍTICO: LIMPIAR EL VALOR ANTES DE PARSEARLO
+                    cleaned_value_str = self._clean_value(value_str)
+                    value = self._parse_value(cleaned_value_str)
                     
                     # Si el operador es '=', podemos usar el valor directamente en MongoDB
                     if op == "=":
                         result[field] = value
                     else:
                         result[field] = {operators[op]: value}
+                    
+                    logger.debug(f"Condición parseada: {field} {op} '{cleaned_value_str}' -> {value}")
                     return
         
         logger.warning(f"No se pudo analizar la condición: {condition_str}")
-    
+
+    def _clean_value(self, value_str):
+        """
+        🆕 NUEVO: Método auxiliar para limpiar valores individuales
+        
+        Args:
+            value_str (str): Valor a limpiar
+            
+        Returns:
+            str: Valor limpio sin punto y coma
+        """
+        if not value_str:
+            return value_str
+        
+        # Remover espacios
+        cleaned = value_str.strip()
+        
+        # 🔧 CRÍTICO: Remover punto y coma final solo si NO está entre comillas
+        if cleaned.endswith(';'):
+            # Verificar que no esté entre comillas
+            if not ((cleaned.startswith("'") and cleaned.count("'") >= 2) or
+                    (cleaned.startswith('"') and cleaned.count('"') >= 2)):
+                cleaned = cleaned[:-1].strip()
+        
+        logger.debug(f"Valor limpio: '{value_str}' -> '{cleaned}'")
+        return cleaned 
+
+
+
     def _has_top_level_operator(self, text, operator):
         """
         Verifica si hay un operador específico a nivel superior (fuera de paréntesis).

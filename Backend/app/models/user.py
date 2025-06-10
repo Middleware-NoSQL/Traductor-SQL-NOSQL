@@ -230,3 +230,46 @@ class UserModel:
                 role="admin"
             )
             logger.info("Usuario administrador creado con credenciales por defecto")
+    
+
+    def update_password(self, email, new_password):
+        """
+        Actualiza la contraseña de un usuario
+        """
+        try:
+            hashed_password = bcrypt.hashpw(
+                new_password.encode('utf-8'), 
+                bcrypt.gensalt()
+            )
+            
+            result = self.collection.update_one(
+                {"email": email},
+                {"$set": {"password": hashed_password}}
+            )
+            
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Error actualizando contraseña: {str(e)}")
+            return False
+
+    
+    def get_user_by_email(self, email):
+        """
+        Obtiene un usuario por su email.
+        
+        Args:
+            email (str): Email del usuario
+        
+        Returns:
+            dict: Usuario encontrado o None
+        """
+        try:
+            user = self.collection.find_one({"email": email})
+            if user:
+                user["_id"] = str(user["_id"])
+                del user["password"]  # No incluir la contraseña
+                return user
+            return None
+        except Exception as e:
+            logger.error(f"Error al obtener usuario por email: {e}")
+            return None

@@ -231,6 +231,7 @@ class MongoDBConnector:
     def execute_query(self, collection_name, query):
         """
         Ejecuta una consulta en MongoDB.
+        🔧 ACTUALIZADO: Soporte para INSERT_MANY
         
         Args:
             collection_name (str): Nombre de la colección.
@@ -271,6 +272,9 @@ class MongoDBConnector:
                     return self._execute_aggregate(collection, query)
                 elif operation == "insert":
                     return self._execute_insert(collection, query)
+                elif operation == "INSERT_MANY":
+                    # 🔧 NUEVO: Soporte para INSERT múltiple
+                    return self._execute_insert_many(collection, query)
                 elif operation == "update":
                     return self._execute_update(collection, query)
                 elif operation == "delete":
@@ -425,6 +429,41 @@ class MongoDBConnector:
         result = collection.insert_one(document)
         return {"inserted_id": str(result.inserted_id)}
     
+    def _execute_insert_many(self, collection, query):
+        """
+        🔧 NUEVO: Ejecuta una operación insertMany() en MongoDB.
+        
+        Args:
+            collection (Collection): Colección de MongoDB.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            dict: Resultado de la operación.
+        """
+        documents = query.get("documents", [])
+        count = len(documents)
+        
+        logger.info(f"Insertando {count} documentos: {documents}")
+        
+        if count == 0:
+            return {
+                "acknowledged": True,
+                "inserted_ids": [],
+                "insertedCount": 0
+            }
+        
+        # Ejecutar la inserción múltiple
+        result = collection.insert_many(documents)
+        inserted_ids = [str(id) for id in result.inserted_ids]
+        
+        logger.info(f"{len(inserted_ids)} documentos insertados con IDs: {inserted_ids}")
+        
+        return {
+            "acknowledged": result.acknowledged,
+            "inserted_ids": inserted_ids,
+            "insertedCount": len(inserted_ids)
+        }
+    
     def _execute_update(self, collection, query):
         """
         Ejecuta una operación updateMany() en MongoDB.
@@ -475,6 +514,352 @@ class MongoDBConnector:
         result = collection.delete_many(delete_query)
         return {"deleted_count": result.deleted_count}
     
+
+    def create_collection_with_schema(self, collection_name, options=None, indexes=None):
+        """
+        Crea una colección con validación de esquema e índices.
+        🔧 CORREGIDO: Maneja colecciones existentes
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            options (dict): Opciones de creación incluyendo validator
+            indexes (list): Lista de índices a crear
+            
+        Returns:
+            dict: Resultado de la operación
+        """
+        try:
+            if not self.is_database_selected():
+                raise Exception("No hay base de datos seleccionada")
+            
+            # 🔧 NUEVO: Verificar si la colección ya existe
+            existing_collections = self.db.list_collection_names()
+            collection_exists = collection_name in existing_collections
+            
+            if collection_exists:
+                logger.warning(f"La colección '{collection_name}' ya existe")
+                
+                # 🔧 OPCIÓN 1: Devolver información de la colección existente
+                result = {
+                    "acknowledged": True,
+                    "collection_created": False,
+                    "collection_name": collection_name,
+                    "already_exists": True,
+                    "message": f"La colección '{collection_name}' ya existe",
+                    "has_validator": False,
+                    "indexes_created": [],
+                    "total_indexes": 0
+                }
+                
+                # Obtener información de la colección existente
+                try:
+                    existing_schema = self.get_collection_schema(collection_name)
+                    if existing_schema and existing_schema.get("has_validator"):
+                        result["has_validator"] = True
+                        result["existing_validator"] = existing_schema.get("validator")
+                except Exception as e:
+                    logger.warning(f"No se pudo obtener esquema existente: {e}")
+                
+                # Obtener índices existentes
+                try:
+                    existing_indexes = self.get_collection_indexes(collection_name)
+                    result["existing_indexes"] = existing_indexes
+                    result["total_existing_indexes"] = len(existing_indexes)
+                except Exception as e:
+                    logger.warning(f"No se pudo obtener índices existentes: {e}")
+                
+                return result
+            
+            # 🔧 NUEVO: Solo crear si no existe
+            # 1. Crear la colección con opciones
+            if options:
+                self.db.create_collection(collection_name, **options)
+                logger.info(f"Colección '{collection_name}' creada con validador de esquema")
+            else:
+                self.db.create_collection(collection_name)
+                logger.info(f"Colección '{collection_name}' creada sin esquema")
+            
+            collection = self.db[collection_name]
+            
+            # 2. Crear índices si se especificaron
+            indexes_created = []
+            if indexes:
+                for index_spec in indexes:
+                    try:
+                        index_name = collection.create_index(
+                            list(index_spec["key"].items()),
+                            unique=index_spec.get("unique", False),
+                            name=index_spec.get("name")
+                        )
+                        indexes_created.append({
+                            "name": index_name,
+                            "specification": index_spec
+                        })
+                        logger.info(f"Índice creado: {index_name}")
+                    except Exception as e:
+                        logger.warning(f"Error creando índice {index_spec.get('name', 'unknown')}: {e}")
+            
+            # 3. Verificar que la colección fue creada
+            collection_info = self.db.list_collection_names()
+            created_successfully = collection_name in collection_info
+            
+            result = {
+                "acknowledged": True,
+                "collection_created": created_successfully,
+                "collection_name": collection_name,
+                "already_exists": False,
+                "has_validator": bool(options and "validator" in options),
+                "indexes_created": indexes_created,
+                "total_indexes": len(indexes_created)
+            }
+            
+            # 4. Obtener información del validador si existe
+            if options and "validator" in options:
+                try:
+                    result["validator_info"] = {
+                        "validation_level": options.get("validationLevel", "moderate"),
+                        "validation_action": options.get("validationAction", "warn"),
+                        "has_schema": "$jsonSchema" in options["validator"]
+                    }
+                except Exception as e:
+                    logger.warning(f"No se pudo obtener información del validador: {e}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error creando colección con esquema: {e}")
+            raise e
+
+
+    # 🔧 MÉTODO ADICIONAL: Opción para recrear colección
+    def recreate_collection_with_schema(self, collection_name, options=None, indexes=None):
+        """
+        🔧 NUEVO: Recrea una colección eliminando la existente primero.
+        ⚠️ PELIGROSO: Esto eliminará todos los datos existentes.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            options (dict): Opciones de creación
+            indexes (list): Lista de índices
+            
+        Returns:
+            dict: Resultado de la operación
+        """
+        try:
+            # 1. Verificar si existe y eliminarla
+            existing_collections = self.db.list_collection_names()
+            if collection_name in existing_collections:
+                logger.warning(f"🗑️ Eliminando colección existente '{collection_name}'")
+                self.db.drop_collection(collection_name)
+            
+            # 2. Crear nueva colección
+            return self.create_collection_with_schema(collection_name, options, indexes)
+            
+        except Exception as e:
+            logger.error(f"Error recreando colección: {e}")
+            raise e
+
+
+    def get_collection_schema(self, collection_name):
+        """
+        Obtiene el esquema de validación de una colección.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            
+        Returns:
+            dict: Información del esquema o None si no tiene
+        """
+        try:
+            if not self.is_database_selected():
+                raise Exception("No hay base de datos seleccionada")
+            
+            # Obtener información de la colección
+            collections = self.db.list_collections(filter={"name": collection_name})
+            collection_info = list(collections)
+            
+            if not collection_info:
+                return None
+            
+            collection_data = collection_info[0]
+            
+            if "options" in collection_data and "validator" in collection_data["options"]:
+                return {
+                    "has_validator": True,
+                    "validator": collection_data["options"]["validator"],
+                    "validation_level": collection_data["options"].get("validationLevel", "moderate"),
+                    "validation_action": collection_data["options"].get("validationAction", "warn")
+                }
+            
+            return {"has_validator": False}
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo esquema de colección: {e}")
+            return None
+
+    def get_collection_indexes(self, collection_name):
+        """
+        Obtiene los índices de una colección.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            
+        Returns:
+            list: Lista de índices
+        """
+        try:
+            if not self.is_database_selected():
+                raise Exception("No hay base de datos seleccionada")
+            
+            collection = self.db[collection_name]
+            indexes = list(collection.list_indexes())
+            
+            # Limpiar información de índices
+            cleaned_indexes = []
+            for index in indexes:
+                cleaned_index = {
+                    "name": index.get("name"),
+                    "key": index.get("key"),
+                    "unique": index.get("unique", False),
+                    "sparse": index.get("sparse", False)
+                }
+                cleaned_indexes.append(cleaned_index)
+            
+            return cleaned_indexes
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo índices de colección: {e}")
+            return []
+
+    def insert_sample_document(self, collection_name, document):
+        """
+        Inserta un documento de ejemplo en una colección.
+        
+        Args:
+            collection_name (str): Nombre de la colección
+            document (dict): Documento a insertar
+            
+        Returns:
+            dict: Resultado de la inserción
+        """
+        try:
+            if not self.is_database_selected():
+                raise Exception("No hay base de datos seleccionada")
+            
+            collection = self.db[collection_name]
+            result = collection.insert_one(document)
+            
+            logger.info(f"Documento de ejemplo insertado con ID: {result.inserted_id}")
+            
+            return {
+                "acknowledged": result.acknowledged,
+                "inserted_id": str(result.inserted_id),
+                "document": document
+            }
+            
+        except Exception as e:
+            logger.error(f"Error insertando documento de ejemplo: {e}")
+            return {
+                "acknowledged": False,
+                "error": str(e)
+            }
+
+    # Método modificado para manejar create_collection_with_schema
+    def execute_query(self, collection_name, query):
+        """
+        Ejecuta una consulta en MongoDB.
+        🔧 ACTUALIZADO: Soporte para CREATE TABLE con esquema
+        
+        Args:
+            collection_name (str): Nombre de la colección.
+            query (dict): Consulta en formato MongoDB.
+            
+        Returns:
+            Resultado de la consulta.
+        """
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Verificar si hay una base de datos seleccionada
+                if not self.is_database_selected():
+                    raise ValueError("No se ha seleccionado ninguna base de datos. Use set_database() primero.")
+                
+                operation = query.get("operation")
+                logger.info(f"Ejecutando operación {operation} en la colección {collection_name}")
+                
+                # 🆕 NUEVO: Manejar create_collection_with_schema
+                if operation == "create_collection_with_schema":
+                    options = query.get("options", {})
+                    indexes = query.get("indexes_to_create", [])
+                    
+                    result = self.create_collection_with_schema(collection_name, options, indexes)
+                    
+                    # Si hay documento de ejemplo, insertarlo
+                    sample_document = query.get("sample_document")
+                    if sample_document:
+                        try:
+                            sample_result = self.insert_sample_document(collection_name, sample_document)
+                            result["sample_document_inserted"] = sample_result
+                        except Exception as e:
+                            logger.warning(f"No se pudo insertar documento de ejemplo: {e}")
+                            result["sample_document_error"] = str(e)
+                    
+                    return result
+                
+                # Verificar si la colección existe para otras operaciones
+                if collection_name not in self.db.list_collection_names():
+                    # Si la colección no existe, verificar si es una operación de creación
+                    if operation == "create_collection":
+                        # Crear la colección explícitamente
+                        options = query.get("options", {})
+                        self.db.create_collection(collection_name, **options)
+                        return {"created": True, "collection_name": collection_name}
+                    else:
+                        # Para otras operaciones, crear la colección vacía automáticamente
+                        logger.warning(f"La colección {collection_name} no existe. Se creará automáticamente.")
+                
+                collection = self.db[collection_name]
+                
+                # Manejar cada tipo de operación (resto del código igual)
+                if operation == "find":
+                    return self._execute_find(collection, query)
+                elif operation == "aggregate":
+                    return self._execute_aggregate(collection, query)
+                elif operation == "insert":
+                    return self._execute_insert(collection, query)
+                elif operation == "INSERT_MANY":
+                    return self._execute_insert_many(collection, query)
+                elif operation == "update":
+                    return self._execute_update(collection, query)
+                elif operation == "delete":
+                    return self._execute_delete(collection, query)
+                elif operation == "create_collection":
+                    # Ya manejado arriba si la colección no existe
+                    return {"created": True, "collection_name": collection_name}
+                elif operation == "drop_collection":
+                    return self._execute_drop_collection(collection)
+                else:
+                    raise ValueError(f"Operación no soportada: {operation}")
+                
+            except Exception as e:
+                logger.error(f"Error al ejecutar consulta (intento {retry_count+1}): {e}")
+                retry_count += 1
+                
+                if "MongoClient after close" in str(e) or "not connected" in str(e).lower():
+                    logger.warning("Detectado error de conexión. Intentando reconectar...")
+                    self._try_reconnect()
+                    time.sleep(1)
+                elif retry_count >= max_retries:
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    raise
+                else:
+                    time.sleep(0.5)
+        
+        raise Exception("Se excedió el número máximo de intentos de consulta")
+
     def _execute_drop_collection(self, collection):
         """
         Ejecuta una operación drop() en una colección de MongoDB.
